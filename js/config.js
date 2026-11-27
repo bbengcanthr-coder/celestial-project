@@ -6,6 +6,6 @@
    ดูวิธีติดตั้งใน README.md
    ============================================================ */
 window.CELESTIAL_CONFIG = {
-  API_URL: "",
+  API_URL: "https://script.google.com/macros/s/AKfycbwOE3RSBelbAru_6QvrNG4h0PTT3g5fpDp7gPMjp070FXng36wH9hSVfvB4swcR9gRHQg/exec",
   CACHE_SECONDS: 60
 };
