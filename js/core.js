@@ -5,6 +5,7 @@
   "use strict";
   const CFG = window.CELESTIAL_CONFIG || {};
   const LIVE = !!(CFG.API_URL && /^https:\/\//.test(CFG.API_URL));
+  const SERVER_VERSION = "2026-11-28"; // ต้องตรงกับ VERSION ใน backend/Code.gs
 
   /* ---------- tiny helpers ---------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -322,7 +323,7 @@
   function ensureSeed() {
     if (window.CELESTIAL_SEED || Store.get(DB_KEY)) return Promise.resolve();
     return new Promise((res, rej) => {
-      const s = document.createElement("script"); s.src = "js/demo-data.js?v=20261128b";
+      const s = document.createElement("script"); s.src = "js/demo-data.js?v=20261128c";
       s.onload = res; s.onerror = () => rej(new Error("โหลดข้อมูลตัวอย่างไม่ได้")); document.head.appendChild(s);
     });
   }
@@ -520,6 +521,7 @@
     imgBusy++;
     try {
       const r = await API.get("image", { ids: batch.map(b => b[0]).join(",") });
+      if (!r || !r.items) { if (!IMG.warned) { IMG.warned = 1; console.warn("[Celestial] Code.gs บนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — รูปจาก Google Drive จะไม่ขึ้นจนกว่าจะ Deploy เป็น New version"); } }
       batch.forEach(([id, h]) => {
         const it = r.items && r.items[id];
         if (it) h.res(new Blob([b64bytes(it.data)], { type: it.mime || "image/jpeg" }));
@@ -716,7 +718,7 @@
 
   /* ---------- export ---------- */
   window.Celestial = {
-    CFG, LIVE, API, Fan, Store, $, $$, esc, attr, uid, qs, byOrder, num, fmtNum, TH_M, TH_MS, TH_D, parseISO, iso, fmtDate, fmtRange, bkkToday, msToBkkMidnight, fmtClock,
+    CFG, LIVE, SERVER_VERSION, API, Fan, Store, $, $$, esc, attr, uid, qs, byOrder, num, fmtNum, TH_M, TH_MS, TH_D, parseISO, iso, fmtDate, fmtRange, bkkToday, msToBkkMidnight, fmtClock,
     toast, modal, closeModal, portrait, code, traineeCard, openProfile, rankedRounds, rankIn, latestRank, STATUS, imgUrl, driveImgId, audioUrl, driveId, loadAudio, initials, renderAcct, sha256, COLLECTIONS, hashStr,
     THEMES, DEFAULT_LEVELS, fanLevels, levelOf, fanCard, avatarHtml, levelLadder
   };
