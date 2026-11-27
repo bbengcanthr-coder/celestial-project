@@ -343,6 +343,10 @@ body.landing{min-height:100vh;min-height:100dvh;background:#04161B url(../assets
 .ctl svg{width:18px;height:18px;fill:currentColor}
 .ctl.play{width:56px;height:56px;border:0;background:var(--blush);color:var(--wine)}
 .ctl.play svg{width:22px;height:22px}
+.ctl.play{position:relative}
+.ctl.play.loading svg{opacity:.25}
+.ctl.play.loading::after{content:"";position:absolute;inset:8px;border-radius:50%;border:3px solid rgba(69,10,24,.22);border-top-color:var(--wine);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .seek{display:grid;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;gap:10px;font-size:12.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
 .seek input{width:100%;accent-color:var(--blush)}
 .tracks{list-style:none;margin:16px 0 0;padding:0;max-height:240px;overflow-y:auto;grid-column:1/-1}
