@@ -10,7 +10,7 @@
   function setWall() {
     const w = $("#wall"); if (!w || !P || !DATA) return;
     const bias = P.bias && DATA.trainees.find(t => t.id === P.bias);
-    const src = C.imgUrl(P.cover) || (bias ? C.imgUrl(bias.photo) : "");
+    const src = C.imgUrl(P.cover) || (bias ? C.photoSrc(bias) : "");
     w.innerHTML = src ? '<img src="' + attr(src) + '" alt="" onerror="this.remove()">' : "";
     document.body.classList.toggle("has-wall", !!src);
     document.body.style.setProperty("--fc", (C.THEMES[P.theme] || C.THEMES.rose)[0]);
@@ -39,7 +39,7 @@
     }
     const lv = C.levelOf(P.hearts, DATA), th = (C.THEMES[P.theme] || C.THEMES.rose)[0];
     const bias = P.bias && DATA.trainees.find(t => t.id === P.bias);
-    const cover = C.imgUrl(P.cover) || (bias ? C.imgUrl(bias.photo) : "");
+    const cover = C.imgUrl(P.cover) || (bias ? C.photoSrc(bias) : "");
     document.title = P.displayName + " (@" + P.username + ") — THE CELESTIAL : PROJECT";
     box.innerHTML = '<article class="pf-hero fr-' + lv.frame + '" style="--fc:' + attr(th) + ";--lc:" + attr(lv.cur.color) + '">' +
       '<div class="pf-cover">' + (cover ? '<img src="' + attr(cover) + '" alt="" onerror="this.remove()">' : "") + '<span class="pf-lv lv-badge">LV.' + lv.n + " " + esc(lv.cur.name) + "</span></div>" +
