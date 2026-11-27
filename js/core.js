@@ -254,6 +254,16 @@
       if (!j || j.ok === false) throw new Error((j && j.error) || "เกิดข้อผิดพลาด");
       return j.data !== undefined ? j.data : j;
     },
+    // GET ?action=…&… (ใช้กับคำสั่งที่ไม่ต้องล็อกอิน เช่น ดึงไฟล์เสียง)
+    async get(action, params = {}) {
+      if (!LIVE) throw new Error("ต้องตั้ง API_URL ใน js/config.js ก่อน");
+      let res;
+      try { res = await fetch(CFG.API_URL + "?" + new URLSearchParams(Object.assign({ action }, params)).toString(), { method: "GET" }); }
+      catch (e) { throw new Error("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง"); }
+      let j; try { j = await res.json(); } catch (e) { throw new Error("เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง (ตรวจสอบ API_URL ใน js/config.js)"); }
+      if (!j || j.ok === false) throw new Error((j && j.error) || "เกิดข้อผิดพลาด");
+      return j.data !== undefined ? j.data : j;
+    },
     // render(data) is called with cached data first (if any), then again when fresh data differs
     async loadPublic(render) {
       const KEY = "celestial_pub_cache";
@@ -372,6 +382,33 @@
     const d = u.match(/^(https:\/\/www\.dropbox\.com\/.*?)(\?dl=0)?$/); if (d && /dropbox/.test(u)) return u.replace("dl=0", "raw=1");
     return u;
   }
+  /* ---------- ไฟล์เสียงจาก Google Drive ----------
+     ตั้งแต่ปี 2024 Drive ไม่ยอมให้ <audio> ของเว็บอื่นเล่นลิงก์ Drive ตรง ๆ
+     จึงขอไฟล์ผ่าน Apps Script (Code.gs → ?action=audio) เป็นชิ้น ๆ แล้วประกอบเป็นไฟล์ในเครื่องเพื่อเล่น */
+  function driveId(u) {
+    u = String(u || "");
+    if (!/(?:drive|docs)\.google\.com|drive\.usercontent\.google\.com/.test(u)) return "";
+    const m = u.match(/(?:\/file\/d\/|[?&]id=)([\w-]{20,})/); return m ? m[1] : "";
+  }
+  function b64bytes(s) { const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+  const audioCache = new Map();
+  // คืน URL ที่ <audio> เล่นได้: ลิงก์ Drive → blob: URL, ลิงก์อื่นใช้ตามเดิม
+  function loadAudio(u) {
+    const id = driveId(u); if (!id) return Promise.resolve(audioUrl(u));
+    if (!LIVE) return Promise.reject(new Error("โหมดตัวอย่างเล่นไฟล์จาก Google Drive ไม่ได้ — ต้องเชื่อม Google Apps Script (API_URL) ก่อน"));
+    if (audioCache.has(id)) return audioCache.get(id);
+    const job = (async () => {
+      const first = await API.get("audio", { id, part: 0 });
+      if (!first || typeof first.data !== "string" || !first.parts) throw new Error("Code.gs บนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — วาง Code.gs ใหม่แล้ว Deploy เป็น New version");
+      const rest = []; for (let i = 1; i < first.parts; i++) rest.push(i);
+      const got = {}; let k = 0;
+      await Promise.all(Array.from({ length: Math.min(3, rest.length) }, async () => { while (k < rest.length) { const n = rest[k++]; got[n] = await API.get("audio", { id, part: n }); } }));
+      const chunks = [first].concat(rest.map(n => got[n])).map(x => b64bytes(x.data));
+      return URL.createObjectURL(new Blob(chunks, { type: first.mime || "audio/mpeg" }));
+    })();
+    audioCache.set(id, job); job.catch(() => audioCache.delete(id));
+    return job;
+  }
   function portrait(t, label) {
     const pairs = PALETTES[t.pal === "rose" ? "rose" : "aqua"]; const p = pairs[hashStr(t.id || t.name) % pairs.length];
     const art = '<div class="art" style="--a:' + p[0] + ";--c:" + p[1] + '"><b>' + esc(initials(t)) + "</b></div>";
@@ -485,7 +522,7 @@
   /* ---------- export ---------- */
   window.Celestial = {
     CFG, LIVE, API, Fan, Store, $, $$, esc, attr, uid, qs, byOrder, TH_M, TH_MS, TH_D, parseISO, iso, fmtDate, fmtRange, bkkToday, msToBkkMidnight,
-    toast, modal, closeModal, portrait, code, traineeCard, tierOf, tierBadge, openProfile, rankedRounds, rankIn, latestRank, STATUS, imgUrl, audioUrl, initials, renderAcct, sha256, COLLECTIONS, hashStr
+    toast, modal, closeModal, portrait, code, traineeCard, tierOf, tierBadge, openProfile, rankedRounds, rankIn, latestRank, STATUS, imgUrl, audioUrl, driveId, loadAudio, initials, renderAcct, sha256, COLLECTIONS, hashStr
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initChrome); else initChrome();
 })();
