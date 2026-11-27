@@ -153,3 +153,16 @@ textarea.input{min-height:110px;resize:vertical;line-height:1.6}
 .fm-h{margin:18px 0 8px;font-size:14px;color:var(--ink-2)}
 .lv-preview{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
 @media (max-width:640px){.fm-grid{grid-template-columns:1fr}}
+/* server / image checks */
+.warn-card{border-color:rgba(240,198,116,.6);background:linear-gradient(135deg,rgba(240,198,116,.14),rgba(7,40,48,.9) 55%);margin-bottom:16px}
+.warn-card h3{color:#ffe3a3}
+.warn-card code{font-size:12.5px;color:var(--blush);word-break:break-all}
+.steps-sm{margin:8px 0 0;padding-left:20px;display:grid;gap:6px;font-size:14px;color:var(--ink-2)}
+.img-chk{display:block;margin-top:6px;font-size:12.5px;color:var(--ink-3)}
+.img-chk.ok,.img-sum.ok{color:#9fe8c4}
+.img-chk.no,.img-sum.no{color:#ffb3c0}
+.img-sum{margin:0;font-size:14px;font-weight:600}
+.chk-list{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px;max-height:260px;overflow:auto}
+.chk-list li{display:grid;gap:2px;padding:8px 10px;border-radius:10px;background:rgba(196,53,86,.1);border:1px solid rgba(196,53,86,.3);font-size:13px}
+.chk-list li span{color:var(--ink-2)}
+.grid2>.a-card+.a-card{margin-top:0}
