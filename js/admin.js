@@ -69,9 +69,9 @@
   }
   const imgWhy = m => /เปิดไฟล์ไม่ได้/.test(m || "") ? "เปิดไม่ได้ — ไฟล์ถูกลบ หรือไม่ได้อยู่ใน Drive ของบัญชีที่ตั้ง Apps Script (แก้: กดอัปโหลดรูปใหม่จากหลังบ้าน)" : (m || "เปิดไม่ได้");
   function imageTargets() {
-    const out = [], add = (label, url) => { if (url) out.push({ label, url: String(url) }); };
-    D.trainees.forEach(t => add("เด็กฝึก " + C.code(t) + " " + (t.stageName || t.name), t.photo));
-    (D.staff || []).forEach(x => add("ทีมงาน " + x.name, x.avatar));
+    const out = [], add = (label, url, thumb) => { if (url || thumb) out.push({ label, url: String(url || ""), thumb: /^data:image\//.test(String(thumb || "")) }); };
+    D.trainees.forEach(t => add("เด็กฝึก " + C.code(t) + " " + (t.stageName || t.name), t.photo, t.photoThumb));
+    (D.staff || []).forEach(x => add("ทีมงาน " + x.name, x.avatar, x.avatarThumb));
     (D.banners || []).forEach(x => add("แบนเนอร์ " + x.title, x.image));
     (D.news || []).forEach(x => add("ข่าว " + x.title, x.image));
     (D.rounds || []).forEach(x => add("รอบ " + x.code, x.banner));
@@ -83,7 +83,7 @@
     return out;
   }
   async function checkImages(list) {
-    const res = list.map(x => Object.assign({}, x, { id: C.driveImgId(x.url) }));
+    const res = list.map(x => Object.assign({}, x, { id: x.thumb ? "" : C.driveImgId(x.url) }));
     const ids = Array.from(new Set(res.filter(r => r.id).map(r => r.id))), info = {}; let old = false;
     for (let i = 0; i < ids.length && C.LIVE; i += 16) {
       const part = ids.slice(i, i + 16);
@@ -91,6 +91,7 @@
       catch (e) { part.forEach(id => info[id] = { ok: 0, msg: e.message }); }
     }
     for (const r of res) {
+      if (r.thumb) { r.ok = 1; r.msg = "มีรูปสำรองในระบบ — แสดงได้ทุกเครื่องแน่นอน"; continue; }
       if (/^data:image\//.test(r.url)) { r.ok = 1; r.msg = "ฝังอยู่ในข้อมูล (โหมดตัวอย่าง)"; continue; }
       if (r.id && C.LIVE) { const x = info[r.id] || {}; r.ok = !old && !!x.ok; r.msg = old ? "Code.gs บนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — คนทั่วไปจะไม่เห็นรูปนี้" : x.ok ? "คนทั่วไปเห็นได้" + (x.size ? " · " + Math.round(x.size / 1024) + " KB" : "") : imgWhy(x.msg); continue; }
       r.ok = await new Promise(done => { const im = new Image(), t = setTimeout(() => done(false), 12000); im.onload = () => { clearTimeout(t); done(true); }; im.onerror = () => { clearTimeout(t); done(false); }; im.src = C.imgUrl(r.url); });
@@ -99,6 +100,49 @@
     return { res, old };
   }
   const IMGCHK = { html: "" };
+  const needThumb = () => D.trainees.filter(t => t.photo && !t.photoThumb).length + (D.staff || []).filter(x => x.avatar && !x.avatarThumb).length;
+  // สร้างรูปสำรองให้รูปที่อัปโหลดไว้ก่อนหน้า: ลองดึงรูปผ่าน Apps Script → ลิงก์ตรง → thumbnail แล้วบันทึกเป็นรูปย่อในข้อมูลของเว็บ
+  async function repairThumbs(progress) {
+    const jobs = [];
+    D.trainees.forEach(t => { if (t.photo && !t.photoThumb) jobs.push({ coll: "trainees", it: t, key: "photo", spec: "360x450", label: "เด็กฝึก " + C.code(t) + " " + (t.stageName || t.name) }); });
+    (D.staff || []).forEach(x => { if (x.avatar && !x.avatarThumb) jobs.push({ coll: "staff", it: x, key: "avatar", spec: "220x220", label: "ทีมงาน " + x.name }); });
+    const done = [], fail = [];
+    for (const j of jobs) {
+      progress("กำลังซ่อมรูป " + (done.length + fail.length + 1) + "/" + jobs.length + " — " + j.label);
+      const url = String(j.it[j.key] || ""), id = C.driveImgId(url), tries = [];
+      if (/^data:image\//.test(url)) tries.push(() => url);
+      if (id && C.LIVE) tries.push(() => C.proxyImg(id));
+      tries.push(() => C.imgUrl(url));
+      if (id) tries.push(() => "https://drive.google.com/thumbnail?id=" + id + "&sz=w1000");
+      for (const t of tries) { try { j.thumb = await makeThumb(await t(), j.spec); break; } catch (e) { } }
+      (j.thumb ? done : fail).push(j);
+    }
+    for (const coll of ["trainees", "staff"]) {
+      const list = done.filter(j => j.coll === coll);
+      for (let i = 0; i < list.length; i += 3) { progress("กำลังบันทึก…"); const r = await call("patch", { collection: coll, changes: list.slice(i, i + 3).map(j => ({ id: j.it.id, fields: { [j.key + "Thumb"]: j.thumb } })), note: "รูปสำรอง" }); D[coll] = r.items; }
+    }
+    return { done, fail, total: jobs.length };
+  }
+
+  /* ---------- รูปย่อฝังในข้อมูล (แสดงได้ทุกเครื่องแน่นอน ไม่ต้องพึ่งลิงก์ Google Drive) ---------- */
+  const THUMB_MAX = 32000; // ตัวอักษร — ต้องไม่เกิน 50,000 ต่อช่องของ Google Sheets
+  async function makeThumb(src, spec) {
+    const [w, h] = String(spec || "360x450").split("x").map(Number);
+    const isBlob = src instanceof Blob, url = isBlob ? URL.createObjectURL(src) : String(src);
+    try {
+      const img = await new Promise((res, rej) => { const i = new Image(); if (!isBlob && !/^(data|blob):/.test(url)) i.crossOrigin = "anonymous"; const t = setTimeout(() => rej(new Error("หมดเวลา")), 15000); i.onload = () => { clearTimeout(t); res(i); }; i.onerror = () => { clearTimeout(t); rej(new Error("เปิดรูปไม่ได้")); }; i.src = url; });
+      let W = w, H = h, q = 0.82, out = "";
+      for (let k = 0; k < 12; k++) {
+        const cv = document.createElement("canvas"); cv.width = W; cv.height = H; const x = cv.getContext("2d");
+        const r = Math.max(W / img.naturalWidth, H / img.naturalHeight), sw = W / r, sh = H / r;
+        x.drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) * 0.25, sw, sh, 0, 0, W, H); // ครอปค่อนไปด้านบน ให้เห็นหน้า
+        out = cv.toDataURL("image/jpeg", q); // ถ้ารูปข้ามโดเมนไม่อนุญาต จะ error ตรงนี้
+        if (out.length <= THUMB_MAX) return out;
+        if (q > 0.56) q -= 0.08; else { W = Math.round(W * 0.88); H = Math.round(H * 0.88); }
+      }
+      throw new Error("ย่อรูปไม่ลง");
+    } finally { if (isBlob) URL.revokeObjectURL(url); }
+  }
 
   /* ---------- generic fields ---------- */
   const OPT = {
@@ -113,7 +157,7 @@
     frame: () => [[1, "1 — กระจกเรียบ"], [2, "2 — ขอบเรืองแสง"], [3, "3 — ขอบไล่สี + ดาวมุม"], [4, "4 — โฮโลแกรมเงิน"], [5, "5 — ทับทิมทองประกาย"], [6, "6 — CELESTIAL ออโรร่า"]],
     role: () => [["staff", "สตาฟ — แก้ไขเนื้อหา"], ["admin", "แอดมิน — จัดการบัญชีและรีเซ็ตโหวตได้"]]
   };
-  function fieldHtml(f, v) {
+  function fieldHtml(f, v, item) {
     const id = "f_" + f.k.replace(/\W/g, "_"), cls = f.full || ["textarea", "lines", "pairs", "image", "audio"].includes(f.type) ? " full" : "";
     const lab = '<label for="' + id + '">' + esc(f.label) + (f.req ? " *" : "") + "</label>";
     const help = f.help ? '<span class="help">' + esc(f.help) + "</span>" : "";
@@ -128,8 +172,10 @@
       case "bool": return '<div class="field' + cls + '"><label class="switch"><input type="checkbox" name="' + attr(f.k) + '"' + (v ? " checked" : "") + "> " + esc(f.label) + "</label>" + help + "</div>";
       case "color": inp = '<div class="color-field"><input type="color" value="' + attr(/^#[0-9a-f]{6}$/i.test(v) ? v : "#86dde4") + '" data-sync="' + id + '" aria-label="เลือกสี"><input class="input" id="' + id + '" name="' + attr(f.k) + '" value="' + attr(v) + '" placeholder="#C43556"></div>'; break;
       case "image": case "audio": {
-        const src = f.type === "image" ? C.imgUrl(v) : "";
+        const tv = f.thumb && item ? String(item[f.k + "Thumb"] || "") : "";
+        const src = f.type === "image" ? (tv || C.imgUrl(v)) : "";
         inp = '<div class="img-field"><div class="pv" data-pv="' + id + '">' + (src ? '<img src="' + attr(src) + '" alt="">' : f.type === "audio" ? "ไฟล์เสียง" : "ไม่มีรูป") + '</div><div><div class="ctrl"><input class="input" id="' + id + '" name="' + attr(f.k) + '" value="' + attr(String(v).startsWith("data:") ? "(อัปโหลดแล้ว)" : v) + '" data-raw="' + attr(String(v).startsWith("data:") ? v : "") + '" placeholder="วางลิงก์ หรือกดอัปโหลด"><label class="btn btn-ghost btn-sm up-btn">อัปโหลด<input type="file" accept="' + (f.type === "image" ? "image/*" : "audio/*") + '" data-up="' + id + '" data-kind="' + f.type + '" data-max="' + (f.max || "") + '"></label></div>' + help + "</div></div>";
+        if (f.thumb) inp = inp.replace(/<\/div><\/div>$/, (v && !tv ? '<small class="img-chk no">รูปนี้ยังไม่มีรูปสำรองในระบบ — ถ้าหน้าเว็บไม่ขึ้นรูป ให้กดอัปโหลดใหม่ แล้วกดบันทึก</small>' : "") + "</div></div>") + '<input type="hidden" name="' + attr(f.k + "Thumb") + '" value="' + attr(tv) + '" data-thumb-of="' + id + '" data-spec="' + attr(f.thumb) + '">';
         return '<div class="field' + cls + '">' + lab + inp + "</div>";
       }
       default: inp = '<input class="input" id="' + id + '" name="' + attr(f.k) + '" type="' + (["number", "date", "password"].includes(f.type) ? f.type : "text") + '"' + (f.type === "password" ? ' autocomplete="new-password"' : "") + ' value="' + attr(v) + '"' + (f.ro ? " readonly" : "") + (f.ph ? ' placeholder="' + attr(f.ph) + '"' : "") + ">";
@@ -151,19 +197,41 @@
   }
   function bindFormExtras(root) {
     $$("[data-sync]", root).forEach(c => { const t = $("#" + c.dataset.sync, root); c.addEventListener("input", () => t.value = c.value); t.addEventListener("input", () => { if (/^#[0-9a-f]{6}$/i.test(t.value)) c.value = t.value; }); });
+    const thumbBox = id => root.querySelector('[data-thumb-of="' + id + '"]');
+    const note = (inp, cls, txt) => { const box = inp.closest(".img-field").lastElementChild; $$(".img-chk", box).forEach(x => x.remove()); if (!txt) return; const n = document.createElement("small"); n.className = "img-chk " + cls; n.textContent = txt; box.appendChild(n); };
     $$("[data-up]", root).forEach(inp => inp.addEventListener("change", async () => {
-      const file = inp.files[0]; if (!file) return; const t = $("#" + inp.dataset.up, root), pv = root.querySelector('[data-pv="' + inp.dataset.up + '"]');
-      pv.textContent = "กำลังอัปโหลด…";
-      try { const url = await upload(file, inp.dataset.kind, inp.dataset.max); if (url.startsWith("data:")) { t.value = "(อัปโหลดแล้ว)"; t.dataset.raw = url; } else { t.value = url; t.dataset.raw = ""; } pv.innerHTML = inp.dataset.kind === "image" ? '<img src="' + attr(C.imgUrl(url)) + '" alt="">' : "✓ อัปโหลดแล้ว"; C.toast("อัปโหลดแล้ว อย่าลืมกดบันทึก");
-        if (C.LIVE && inp.dataset.kind === "image") { const box = inp.closest(".img-field").lastElementChild; const old = box.querySelector(".img-chk"); if (old) old.remove(); const note = document.createElement("small"); note.className = "img-chk"; note.textContent = "กำลังตรวจว่าคนทั่วไปเห็นรูปนี้ได้ไหม…"; box.appendChild(note);
-          checkImages([{ label: "", url }]).then(({ res }) => { const r = res[0]; note.className = "img-chk " + (r.ok ? "ok" : "no"); note.textContent = (r.ok ? "✓ คนทั่วไปเห็นรูปนี้ได้ — กดบันทึกเพื่อใช้รูปนี้" : "✗ " + r.msg); }); } }
-      catch (e) { pv.textContent = "ผิดพลาด"; C.toast(e.message, true); }
+      const file = inp.files[0]; if (!file) return; const t = $("#" + inp.dataset.up, root), pv = root.querySelector('[data-pv="' + inp.dataset.up + '"]'), tb = thumbBox(inp.dataset.up);
+      pv.textContent = "กำลังอัปโหลด…"; note(inp);
+      let thumb = "";
+      if (tb && inp.dataset.kind === "image") { try { thumb = await makeThumb(file, tb.dataset.spec); tb.value = thumb; pv.innerHTML = '<img src="' + attr(thumb) + '" alt="">'; } catch (x) { tb.value = ""; } }
+      try {
+        const url = await upload(file, inp.dataset.kind, inp.dataset.max);
+        if (url.startsWith("data:")) { t.value = "(อัปโหลดแล้ว)"; t.dataset.raw = url; } else { t.value = url; t.dataset.raw = ""; }
+        if (!thumb) pv.innerHTML = inp.dataset.kind === "image" ? '<img src="' + attr(C.imgUrl(url)) + '" alt="">' : "✓ อัปโหลดแล้ว";
+        if (thumb) note(inp, "ok", "✓ อัปโหลดแล้ว + สร้างรูปสำรองในระบบแล้ว — หน้าเว็บแสดงรูปนี้ได้ทุกเครื่อง (กดบันทึกเพื่อใช้รูปนี้)");
+        else if (C.LIVE && inp.dataset.kind === "image") { note(inp, "", "กำลังตรวจว่าคนทั่วไปเห็นรูปนี้ได้ไหม…"); checkImages([{ label: "", url }]).then(({ res }) => { const r = res[0]; note(inp, r.ok ? "ok" : "no", (r.ok ? "✓ คนทั่วไปเห็นรูปนี้ได้ — กดบันทึกเพื่อใช้รูปนี้" : "✗ " + r.msg)); }); }
+        C.toast("อัปโหลดแล้ว อย่าลืมกดบันทึก");
+      } catch (e) {
+        if (thumb) { t.value = ""; t.dataset.raw = ""; note(inp, "ok", "อัปโหลดรูปเต็มขึ้น Drive ไม่สำเร็จ (" + e.message + ") แต่มีรูปสำรองในระบบแล้ว กดบันทึกได้เลย หน้าเว็บจะแสดงรูปสำรองนี้"); }
+        else { pv.textContent = "ผิดพลาด"; C.toast(e.message, true); }
+      }
       inp.value = "";
     }));
-    $$('.img-field input.input', root).forEach(t => t.addEventListener("input", () => { t.dataset.raw = ""; const pv = root.querySelector('[data-pv="' + t.id + '"]'); const u = C.imgUrl(t.value); if (pv && pv.textContent !== "ไฟล์เสียง") pv.innerHTML = u ? '<img src="' + attr(u) + '" alt="" onerror="this.replaceWith(\'ลิงก์รูปเปิดไม่ได้\')">' : "ไม่มีรูป"; }));
+    let pt = null;
+    $$('.img-field input.input', root).forEach(t => t.addEventListener("input", () => {
+      t.dataset.raw = ""; const pv = root.querySelector('[data-pv="' + t.id + '"]'), tb = thumbBox(t.id); const u = C.imgUrl(t.value);
+      if (pv && pv.textContent !== "ไฟล์เสียง") pv.innerHTML = u ? '<img src="' + attr(u) + '" alt="" onerror="this.replaceWith(\'ลิงก์รูปเปิดไม่ได้\')">' : "ไม่มีรูป";
+      if (!tb) return; tb.value = ""; note(t);
+      clearTimeout(pt); if (!u) return;
+      pt = setTimeout(async () => { // วางลิงก์รูปเอง: ลองสร้างรูปสำรองจากลิงก์ (บางลิงก์ไม่อนุญาต)
+        note(t, "", "กำลังสร้างรูปสำรองจากลิงก์…");
+        try { tb.value = await makeThumb(u, tb.dataset.spec); note(t, "ok", "✓ สร้างรูปสำรองในระบบแล้ว — หน้าเว็บแสดงรูปนี้ได้ทุกเครื่อง"); }
+        catch (x) { note(t, "no", "สร้างรูปสำรองจากลิงก์นี้ไม่ได้ — ถ้าหน้าเว็บไม่ขึ้นรูป ให้ดาวน์โหลดรูปมาแล้วกดปุ่มอัปโหลดแทน"); }
+      }, 700);
+    }));
   }
   function openForm(title, fields, item, onSave, extra = "") {
-    C.modal('<form class="pad" id="edForm" novalidate><h3 class="mt">' + esc(title) + "</h3>" + extra + '<div class="form-grid">' + fields.map(f => fieldHtml(f, f.k.split(".").reduce((o, k) => o == null ? o : o[k], item))).join("") + '</div><div class="form-foot"><button class="btn btn-ghost" type="button" onclick="Celestial.closeModal()">ยกเลิก</button><button class="btn btn-rose" type="submit">บันทึก</button></div></form>');
+    C.modal('<form class="pad" id="edForm" novalidate><h3 class="mt">' + esc(title) + "</h3>" + extra + '<div class="form-grid">' + fields.map(f => fieldHtml(f, f.k.split(".").reduce((o, k) => o == null ? o : o[k], item), item)).join("") + '</div><div class="form-foot"><button class="btn btn-ghost" type="button" onclick="Celestial.closeModal()">ยกเลิก</button><button class="btn btn-rose" type="submit">บันทึก</button></div></form>');
     const form = $("#edForm"); bindFormExtras(form);
     form.addEventListener("submit", async e => {
       e.preventDefault(); const out = JSON.parse(JSON.stringify(item || {}));
@@ -172,6 +240,7 @@
         if (f.req && (v === "" || (Array.isArray(v) && !v.length))) { C.toast("กรุณากรอก " + f.label, true); form.elements[f.k] && form.elements[f.k].focus(); return; }
         const ks = f.k.split("."); let o = out; ks.slice(0, -1).forEach(k => { o[k] = o[k] && typeof o[k] === "object" ? o[k] : {}; o = o[k]; }); o[ks[ks.length - 1]] = v;
       }
+      $$("[data-thumb-of]", form).forEach(h => { out[h.name] = h.value; });
       const btn = form.querySelector("[type=submit]"); btn.disabled = true; btn.textContent = "กำลังบันทึก…";
       try { const msg = await onSave(out); C.closeModal(); C.toast(typeof msg === "string" ? msg : "บันทึกแล้ว"); render(); }
       catch (x) { C.toast(x.message, true); btn.disabled = false; btn.textContent = "บันทึก"; }
@@ -183,7 +252,7 @@
   const SCHEMA = {
     trainees: {
       label: "เด็กฝึก", add: "เพิ่มเด็กฝึก",
-      fields: () => [F("no", "หมายเลข", "number", { req: 1, help: "ใช้เป็นรหัสเด็กฝึก เช่น 1 = B01" }), F("name", "ชื่อ-นามสกุล", "text", { req: 1 }), F("stageName", "ชื่อในวงการ / ชื่อเล่น"), F("nationality", "สัญชาติ", "text", { ph: "เช่น ไทย" }), F("position", "ตำแหน่ง", "text", { ph: "เช่น Main Vocal / Leader" }), F("birthday", "วันเกิด", "text", { ph: "เช่น 14 ก.พ." }), F("height", "ส่วนสูง", "text", { ph: "เช่น 175 cm" }), F("status", "สถานะ", "select", { opt: "status" }), F("photo", "รูปโปรไฟล์ (แนวตั้ง 4:5)", "image", { max: 1200, help: "อัปโหลด หรือวางลิงก์รูป (รองรับลิงก์แชร์ Google Drive — ถ้าลิงก์ตรงเปิดไม่ได้ เว็บจะดึงรูปผ่าน Apps Script ให้อัตโนมัติ)" }), F("bio", "ประวัติ", "textarea", { rows: 5 }), F("cv", "ผู้เล่น / CV (แสดงในโปรไฟล์ ถ้าเว้นว่างจะไม่แสดง)"), F("link", "ลิงก์โปรไฟล์ฉบับเต็ม (Google Doc ฯลฯ)")],
+      fields: () => [F("no", "หมายเลข", "number", { req: 1, help: "ใช้เป็นรหัสเด็กฝึก เช่น 1 = B01" }), F("name", "ชื่อ-นามสกุล", "text", { req: 1 }), F("stageName", "ชื่อในวงการ / ชื่อเล่น"), F("nationality", "สัญชาติ", "text", { ph: "เช่น ไทย" }), F("position", "ตำแหน่ง", "text", { ph: "เช่น Main Vocal / Leader" }), F("birthday", "วันเกิด", "text", { ph: "เช่น 14 ก.พ." }), F("height", "ส่วนสูง", "text", { ph: "เช่น 175 cm" }), F("status", "สถานะ", "select", { opt: "status" }), F("photo", "รูปโปรไฟล์ (แนวตั้ง 4:5)", "image", { max: 1200, thumb: "360x450", help: "แนะนำกดอัปโหลด — ระบบจะเก็บรูปสำรองขนาดเล็กไว้ในเว็บด้วย รูปจึงขึ้นได้ทุกเครื่องแม้ลิงก์ Google Drive เปิดไม่ได้" }), F("bio", "ประวัติ", "textarea", { rows: 5 }), F("cv", "ผู้เล่น / CV (แสดงในโปรไฟล์ ถ้าเว้นว่างจะไม่แสดง)"), F("link", "ลิงก์โปรไฟล์ฉบับเต็ม (Google Doc ฯลฯ)")],
       row: t => ({ th: '<div class="th">' + C.portrait(t) + "</div>", title: C.code(t) + " " + t.name, sub: [t.stageName, t.nationality, t.position].filter(Boolean).join(" — "), off: t.status !== "active" && t.status !== "debut" }),
       sort: (a, b) => (Number(a.no) || 0) - (Number(b.no) || 0) || String(a.id).localeCompare(String(b.id)),
       fresh: () => { const n = Math.max(0, ...D.trainees.map(t => +t.no || 0)) + 1; return { side: "B", no: n, status: "active", ranks: {} }; },
@@ -195,7 +264,7 @@
     rounds: { label: "รอบการแข่งขัน", add: "เพิ่มรอบ", ordered: 1, fields: () => [F("code", "รหัสรอบ", "text", { req: 1, ph: "เช่น ROUND 03" }), F("title", "ชื่อรอบ", "text", { req: 1, ph: "เช่น SOLAR FLARE" }), F("subtitle", "คำอธิบายสั้น", "text", { full: 1 }), F("status", "สถานะ", "select", { opt: "rstatus" }), F("deadline", "กำหนดส่งงาน", "date"), F("start", "วันเริ่มรอบ", "date"), F("end", "วันประกาศผล", "date"), F("summary", "สรุปภารกิจ", "textarea"), F("rules", "กติกา (บรรทัดละ 1 ข้อ)", "lines"), F("scoring", "เกณฑ์คะแนน (บรรทัดละ 1 รายการ รูปแบบ: หัวข้อ | คะแนน)", "pairs"), F("doc", "ลิงก์เอกสารภารกิจ (Google Doc)"), F("video", "ลิงก์คลิปการแสดง (YouTube)"), F("banner", "รูปแบนเนอร์รอบ", "image", { max: 1800 })], row: r => ({ th: '<div class="th sw" style="background:' + ({ live: "#C43556", done: "#5B6E74", soon: "#86DDE4" }[r.status] || "#86DDE4") + '">' + esc((r.code || "").replace(/\D/g, "").slice(-2) || "F") + "</div>", title: r.code + " — " + r.title + (D.settings.currentRound === r.id ? " (รอบปัจจุบัน)" : ""), sub: ({ live: "กำลังแข่งขัน", done: "จบรอบแล้ว", soon: "เร็ว ๆ นี้" }[r.status] || "") + " — " + C.fmtRange(r.start, r.end) }), fresh: () => ({ status: "soon", rules: [], scoring: [] }) },
     rules: { label: "กฎของคอมมู", add: "เพิ่มหมวดกฎ", ordered: 1, fields: () => [F("title", "ชื่อหมวด", "text", { req: 1 }), F("kind", "รูปแบบ", "select", { opt: "rkind" }), F("items", "ข้อกฎ (บรรทัดละ 1 ข้อ — แบบตารางใช้รูปแบบ: การกระทำ | บทลงโทษ)", "lines", { rows: 9 })], row: r => ({ th: '<div class="th sw" style="background:#F9CCCB">' + esc(String(r.order || "")) + "</div>", title: r.title, sub: (r.items || []).length + " ข้อ — " + (r.kind === "table" ? "ตาราง" : "รายการ") }), fresh: () => ({ kind: "list", items: [] }) },
     uniforms: { label: "ชุดเด็กฝึก", add: "เพิ่มชุด", ordered: 1, fields: () => [F("name", "ชื่อชุด", "text", { req: 1 }), F("label", "ป้ายกำกับ", "text", { ph: "เช่น ชุดฝึกซ้อม / ชุดเวที" }), F("color", "สีหลัก", "color"), F("garment", "แบบภาพตัวอย่าง (กรณีไม่มีรูป)", "select", { opt: "garment" }), F("image", "รูปชุดจริง", "image", { max: 1200 }), F("desc", "คำอธิบาย", "textarea", { rows: 3 })], row: u => ({ th: '<div class="th">' + (C.imgUrl(u.image) ? '<img src="' + attr(C.imgUrl(u.image)) + '" alt="">' : '<div style="width:100%;height:100%;background:' + attr(u.color) + '"></div>') + "</div>", title: u.name, sub: (u.label || "—") + " — " + (u.color || "") }), fresh: () => ({ color: "#86DDE4", garment: "jacket", label: "ชุดฝึกซ้อม" }) },
-    staff: { label: "โปรไฟล์ทีมงาน", add: "เพิ่มทีมงาน", ordered: 1, fields: () => [F("name", "ชื่อ", "text", { req: 1 }), F("role", "ตำแหน่ง", "text", { ph: "เช่น Vocal Mentor" }), F("team", "ทีม (ใช้จัดกลุ่มบนหน้าเว็บ)", "text", { ph: "เช่น ทีมเมนเทอร์" }), F("contact", "ช่องทางติดต่อ", "text", { ph: "@ชื่อ" }), F("bio", "หน้าที่ / แนะนำตัว", "textarea", { rows: 3 }), F("quote", "คำพูดประจำตัว"), F("avatar", "รูปโปรไฟล์ (สี่เหลี่ยมจัตุรัส)", "image", { max: 700 })], row: s => ({ th: '<div class="th round">' + C.portrait({ id: s.id, name: s.name, pal: "rose", photo: s.avatar }) + "</div>", title: s.name, sub: [s.role, s.team].filter(Boolean).join(" — ") }), fresh: () => ({}) },
+    staff: { label: "โปรไฟล์ทีมงาน", add: "เพิ่มทีมงาน", ordered: 1, fields: () => [F("name", "ชื่อ", "text", { req: 1 }), F("role", "ตำแหน่ง", "text", { ph: "เช่น Vocal Mentor" }), F("team", "ทีม (ใช้จัดกลุ่มบนหน้าเว็บ)", "text", { ph: "เช่น ทีมเมนเทอร์" }), F("contact", "ช่องทางติดต่อ", "text", { ph: "@ชื่อ" }), F("bio", "หน้าที่ / แนะนำตัว", "textarea", { rows: 3 }), F("quote", "คำพูดประจำตัว"), F("avatar", "รูปโปรไฟล์ (สี่เหลี่ยมจัตุรัส)", "image", { max: 700, thumb: "220x220" })], row: s => ({ th: '<div class="th round">' + C.portrait({ id: s.id, name: s.name, pal: "rose", photo: s.avatar, avatarThumb: s.avatarThumb }) + "</div>", title: s.name, sub: [s.role, s.team].filter(Boolean).join(" — ") }), fresh: () => ({}) },
     tracks: { label: "เพลย์ลิสต์", add: "เพิ่มเพลง", ordered: 1, fields: () => [F("title", "ชื่อเพลง", "text", { req: 1 }), F("artist", "ศิลปิน", "text"), F("winner", "อยู่ในเพลย์ลิสต์ของ", "select", { opt: "winner" }), F("youtube", "ลิงก์ YouTube (ถ้ามี)"), F("audio", "ไฟล์เสียง (.mp3)", "audio", { help: "กดอัปโหลด (ไม่เกิน 20MB) หรือวางลิงก์ไฟล์ใน Google Drive — เว็บจะดึงไฟล์ผ่าน Apps Script ให้เอง ไฟล์ต้องอยู่ใน Drive ของบัญชีที่ตั้ง Apps Script หรือแชร์แบบ 'ทุกคนที่มีลิงก์'" }), F("cover", "ปกเพลง (สี่เหลี่ยมจัตุรัส)", "image", { max: 900 }), F("note", "หมายเหตุใต้ชื่อเพลง", "text", { full: 1 })], row: t => ({ th: '<div class="th">' + (C.imgUrl(t.cover) ? '<img src="' + attr(C.imgUrl(t.cover)) + '" alt="">' : '<div class="art"><b>♪</b></div>') + "</div>", title: t.title, sub: (t.artist || "") + (t.audio ? " — มีไฟล์เสียง" : t.youtube ? " — YouTube" : " — ยังไม่มีไฟล์") }), fresh: () => ({}) },
     history: { label: "ประวัติโปรเจกต์", add: "เพิ่มเหตุการณ์", ordered: 1, fields: () => [F("date", "ช่วงเวลา", "text", { req: 1, ph: "เช่น มิ.ย. 2569" }), F("title", "หัวข้อ", "text", { req: 1 }), F("body", "รายละเอียด", "textarea"), F("image", "รูปประกอบ", "image", { max: 1400 })], row: h => ({ th: '<div class="th sw" style="background:#86DDE4;font-size:12px;font-style:normal">' + esc(String(h.date).slice(-4)) + "</div>", title: h.title, sub: h.date }), fresh: () => ({}) }
   };
@@ -310,15 +379,25 @@
         '<div class="toolbar"><a class="btn btn-ghost btn-sm" href="home.html" target="_blank" rel="noopener">เปิดหน้าเว็บ</a><button class="btn btn-ghost btn-sm" type="button" data-go="ranking">อัปเดตอันดับ</button><button class="btn btn-ghost btn-sm" type="button" data-go="banners">จัดการแบนเนอร์</button></div></div>' +
         '<div class="a-card"><h3>กิจกรรมที่กำลังจะถึง</h3><p class="desc">จากปฏิทิน 2570</p><div class="rows">' + (soon.map(e => { const r = SCHEMA.events.row(e); return '<div class="row">' + r.th + '<div class="tx"><strong>' + esc(r.title) + "</strong><small>" + esc(r.sub) + "</small></div><div></div></div>"; }).join("") || '<div class="empty">ไม่มีกิจกรรมที่กำลังจะถึง</div>') + "</div></div></div>" +
         '<div class="grid2" style="margin-top:16px"><div class="a-card"><h3>สิ่งที่ควรตรวจ</h3><ul class="notes" style="margin-top:12px">' +
-        "<li>รอบปัจจุบัน: " + esc(cr ? cr.code + " " + cr.title : "ยังไม่ได้ตั้ง") + "</li><li>ประกาศผลโหวตแล้ว: " + esc(rounds().filter(r => ((D.board || {})[r.id] || {}).published).map(r => r.code).join(", ") || "ยังไม่มี") + "</li><li>เด็กฝึกที่ยังไม่มีรูป: " + noPhoto + " คน</li><li>แบนเนอร์ที่แสดงอยู่: " + D.banners.filter(b => b.active !== false).length + " ชิ้น</li><li>บัญชีแฟนคลับที่ถูกระงับ: " + D.fans.filter(f => f.banned).length + " บัญชี</li>" + (oldG ? '<li style="color:#ffd9dd">ยังมีข้อมูลเด็กฝึกฝั่งหญิง (รหัส G) ค้างอยู่ ' + oldG + ' คน — THE CELESTIAL รับเฉพาะเด็กฝึกชาย ลบได้ที่เมนู “เด็กฝึก”</li>' : "") + "</ul></div>" +
+        "<li>รอบปัจจุบัน: " + esc(cr ? cr.code + " " + cr.title : "ยังไม่ได้ตั้ง") + "</li><li>ประกาศผลโหวตแล้ว: " + esc(rounds().filter(r => ((D.board || {})[r.id] || {}).published).map(r => r.code).join(", ") || "ยังไม่มี") + "</li><li>เด็กฝึกที่ยังไม่มีรูป: " + noPhoto + " คน</li>" + (needThumb() ? '<li style="color:#ffd9dd">รูปที่ยังไม่มีรูปสำรอง (อาจไม่ขึ้นบนเว็บ): ' + needThumb() + " รูป — กด “ซ่อมรูปที่ไม่ขึ้น” ด้านล่าง</li>" : "") + "<li>แบนเนอร์ที่แสดงอยู่: " + D.banners.filter(b => b.active !== false).length + " ชิ้น</li><li>บัญชีแฟนคลับที่ถูกระงับ: " + D.fans.filter(f => f.banned).length + " บัญชี</li>" + (oldG ? '<li style="color:#ffd9dd">ยังมีข้อมูลเด็กฝึกฝั่งหญิง (รหัส G) ค้างอยู่ ' + oldG + ' คน — THE CELESTIAL รับเฉพาะเด็กฝึกชาย ลบได้ที่เมนู “เด็กฝึก”</li>' : "") + "</ul></div>" +
         '<div class="a-card"><h3>กิจกรรมล่าสุดของทีมงาน</h3><ul class="log" style="margin-top:8px">' + (D.log || []).slice(0, 8).map(l => "<li><time>" + esc(fmtTs(l.ts)) + "</time><span><b>" + esc(l.user) + "</b> " + esc(logText(l)) + "</span></li>").join("") + "</ul></div></div>" +
-        '<div class="a-card" style="margin-top:16px"><div class="a-head"><div><h3>ตรวจรูปภาพบนเว็บ</h3><span class="muted" style="font-size:13.5px">เช็กว่ารูปทุกรูปที่ใช้บนเว็บ คนทั่วไป (ที่ไม่ได้ล็อกอิน Google ของทีมงาน) เปิดเห็นได้จริงไหม</span></div><button class="btn btn-ghost btn-sm" type="button" id="imgCheck">ตรวจทุกรูป</button></div><div id="imgRes">' + IMGCHK.html + "</div></div>";
+        '<div class="a-card" style="margin-top:16px"><div class="a-head"><div><h3>ตรวจรูปภาพบนเว็บ</h3><span class="muted" style="font-size:13.5px">เช็กว่ารูปทุกรูปที่ใช้บนเว็บ คนทั่วไป (ที่ไม่ได้ล็อกอิน Google ของทีมงาน) เปิดเห็นได้จริงไหม</span></div><div class="toolbar">' + (needThumb() ? '<button class="btn btn-rose btn-sm" type="button" id="imgFix">ซ่อมรูปที่ไม่ขึ้น (' + needThumb() + ")</button>" : "") + '<button class="btn btn-ghost btn-sm" type="button" id="imgCheck">ตรวจทุกรูป</button></div></div>' + (needThumb() ? '<p class="img-sum no" style="margin-bottom:8px">รูปเด็กฝึก/ทีมงาน ' + needThumb() + ' รูปยังไม่มีรูปสำรองในระบบ (อาจไม่ขึ้นบนหน้าเว็บ) — กด “ซ่อมรูปที่ไม่ขึ้น”</p>' : "") + '<div id="imgRes">' + IMGCHK.html + "</div></div>";
     },
     bind: root => {
       $("#qVote", root).addEventListener("change", async e => { try { await saveSettings({ vote: Object.assign({}, D.settings.vote, { open: e.target.checked }) }); C.toast(e.target.checked ? "เปิดโหวตแล้ว" : "ปิดโหวตแล้ว"); } catch (x) { C.toast(x.message, true); e.target.checked = !e.target.checked; } });
       $("#qAnn", root).addEventListener("change", async e => { try { await saveSettings({ announcement: Object.assign({}, D.settings.announcement, { on: e.target.checked, version: C.uid("a") }) }); C.toast("บันทึกแล้ว"); } catch (x) { C.toast(x.message, true); } });
       $("#qRound", root).addEventListener("change", async e => { try { await saveSettings({ currentRound: e.target.value }); C.toast("ตั้งรอบปัจจุบันแล้ว"); } catch (x) { C.toast(x.message, true); } });
       root.addEventListener("click", e => { const g = e.target.closest("[data-go]"); if (g) go(g.dataset.go); });
+      const fx = $("#imgFix", root); if (fx) fx.addEventListener("click", async () => {
+        fx.disabled = true; const out = $("#imgRes", root);
+        try {
+          const r = await repairThumbs(m => { out.innerHTML = '<p class="muted" style="font-size:13.5px">' + esc(m) + "</p>"; });
+          IMGCHK.html = '<p class="img-sum ' + (r.fail.length ? "no" : "ok") + '">' + (r.done.length ? "✓ ซ่อมแล้ว " + r.done.length + " รูป — หน้าเว็บแสดงรูปเหล่านี้ได้ทุกเครื่องแล้ว" : "ยังซ่อมไม่ได้สักรูป") + "</p>" +
+            (r.fail.length ? '<p class="desc" style="margin:8px 0 4px">ดึงรูปเดิมมาไม่ได้ ' + r.fail.length + ' รูป — ให้ไปที่เมนู “เด็กฝึก” (หรือ “โปรไฟล์ทีมงาน”) กด ✎ แก้ไข → <b>อัปโหลด</b> รูปใหม่จากเครื่อง → <b>บันทึก</b></p><ul class="chk-list">' + r.fail.map(j => "<li><b>" + esc(j.label) + "</b></li>").join("") + "</ul>" : "");
+          C.toast(r.done.length ? "ซ่อมรูปแล้ว " + r.done.length + " รูป" : "ยังซ่อมรูปไม่ได้ ดูรายละเอียดในการ์ด", !r.done.length);
+        } catch (x) { IMGCHK.html = '<p class="img-sum no">ซ่อมไม่สำเร็จ: ' + esc(x.message) + "</p>"; }
+        render();
+      });
       $("#imgCheck", root).addEventListener("click", async e => {
         const b = e.target; b.disabled = true; b.textContent = "กำลังตรวจ…"; $("#imgRes", root).innerHTML = '<p class="muted" style="font-size:13.5px">กำลังตรวจรูปทั้งหมด อาจใช้เวลาสักครู่…</p>';
         try {
