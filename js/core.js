@@ -323,7 +323,7 @@
   function ensureSeed() {
     if (window.CELESTIAL_SEED || Store.get(DB_KEY)) return Promise.resolve();
     return new Promise((res, rej) => {
-      const s = document.createElement("script"); s.src = "js/demo-data.js?v=20261128c";
+      const s = document.createElement("script"); s.src = "js/demo-data.js?v=20261128d";
       s.onload = res; s.onerror = () => rej(new Error("โหลดข้อมูลตัวอย่างไม่ได้")); document.head.appendChild(s);
     });
   }
@@ -495,6 +495,17 @@
     proxyImg(id).then(url => { img.src = url; }).catch(() => giveUp(img));
   }, true);
 
+  // รูปย่อขึ้นก่อนเสมอ แล้วค่อยลองสลับเป็นรูปเต็ม: ลิงก์ตรง → thumbnail → Apps Script (ถ้าทุกทางไม่ได้ ก็ใช้รูปย่อต่อไป)
+  function tryLoad(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(src); i.onerror = () => rej(new Error("x")); i.src = src; }); }
+  const upgraded = new WeakSet();
+  document.addEventListener("load", e => {
+    const img = e.target; if (!img || img.tagName !== "IMG" || !img.dataset.full || upgraded.has(img)) return;
+    upgraded.add(img); const full = img.dataset.full, id = driveImgId(full);
+    tryLoad(full)
+      .catch(() => id ? tryLoad(thumbUrl(id)) : Promise.reject())
+      .catch(() => id && LIVE ? proxyImg(id) : Promise.reject())
+      .then(src => { if (img.isConnected) img.src = src; }, () => { });
+  }, true);
   const imgMem = new Map(), imgQ = new Map(); let imgT = null, imgBusy = 0;
   const IMG_CACHE = "celestial-img-v1", imgKey = id => "https://img.celestial.local/" + id;
   async function cacheGet(id) {
@@ -578,11 +589,15 @@
     const parts = n.split(/\s+/).filter(Boolean);
     return (parts.length > 1 ? parts[0][0] + parts[1][0] : n.slice(0, 2)).toUpperCase();
   }
+  // รูปย่อที่ฝังอยู่ในข้อมูลของเว็บ (photoThumb / avatarThumb) ขึ้นได้ทุกเครื่องแน่นอน ไม่ต้องพึ่งลิงก์ Google Drive
+  const thumbOf = t => { const v = t && (t.photoThumb || t.avatarThumb || t.imageThumb); return /^data:image\//.test(String(v || "")) ? String(v) : ""; };
+  function photoSrc(t) { return thumbOf(t) || imgUrl(t && (t.photo || t.image || t.avatar)); }
   function portrait(t, label) {
     const pairs = PALETTES[t.pal === "rose" ? "rose" : "aqua"]; const p = pairs[hashStr(t.id || t.name) % pairs.length];
     const art = '<div class="art" style="--a:' + p[0] + ";--c:" + p[1] + '"><b>' + esc(initials(t)) + "</b></div>";
-    const src = imgUrl(t.photo || t.image || t.avatar);
-    return src ? art + '<img src="' + attr(src) + '" alt="' + attr(label || t.name || "") + '" loading="lazy" onerror="this.remove()">' : art;
+    const full = imgUrl(t.photo || t.image || t.avatar), th = thumbOf(t), alt = ' alt="' + attr(label || t.name || "") + '"';
+    if (th) return art + '<img src="' + attr(th) + '"' + (full ? ' data-full="' + attr(full) + '"' : "") + alt + ' onerror="this.remove()">';
+    return full ? art + '<img src="' + attr(full) + '"' + alt + ' loading="lazy" onerror="this.remove()">' : art;
   }
   const STATUS = { active: "กำลังแข่งขัน", eliminated: "ตกรอบ", debut: "เดบิวต์", withdrawn: "ถอนตัว" };
   function traineeCard(t, data, opts = {}) {
@@ -639,7 +654,7 @@
   function fanCard(f, data, opts = {}) {
     const lv = levelOf(f.hearts, data); const th = (THEMES[f.theme] || THEMES.rose)[0];
     const bias = f.bias && (data.trainees || []).find(t => t.id === f.bias);
-    const cover = imgUrl(f.cover) || (bias ? imgUrl(bias.photo) : "");
+    const cover = imgUrl(f.cover) || (bias ? photoSrc(bias) : "");
     const tag = opts.link === false ? "div" : "a";
     return "<" + tag + ' class="fan-card fr-' + lv.frame + (opts.size ? " " + opts.size : "") + '"' + (tag === "a" ? ' href="profile.html?u=' + encodeURIComponent(f.username) + '"' : "") + ' style="--fc:' + attr(th) + ";--lc:" + attr(lv.cur.color || "#9FB3B8") + '">' +
       '<span class="fc-in"><span class="fc-cover">' + (cover ? '<img src="' + attr(cover) + '" alt="" loading="lazy" onerror="this.remove()">' : "") + "</span>" +
@@ -719,7 +734,7 @@
   /* ---------- export ---------- */
   window.Celestial = {
     CFG, LIVE, SERVER_VERSION, API, Fan, Store, $, $$, esc, attr, uid, qs, byOrder, num, fmtNum, TH_M, TH_MS, TH_D, parseISO, iso, fmtDate, fmtRange, bkkToday, msToBkkMidnight, fmtClock,
-    toast, modal, closeModal, portrait, code, traineeCard, openProfile, rankedRounds, rankIn, latestRank, STATUS, imgUrl, driveImgId, audioUrl, driveId, loadAudio, initials, renderAcct, sha256, COLLECTIONS, hashStr,
+    toast, modal, closeModal, portrait, photoSrc, proxyImg, code, traineeCard, openProfile, rankedRounds, rankIn, latestRank, STATUS, imgUrl, driveImgId, audioUrl, driveId, loadAudio, initials, renderAcct, sha256, COLLECTIONS, hashStr,
     THEMES, DEFAULT_LEVELS, fanLevels, levelOf, fanCard, avatarHtml, levelLadder
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initChrome); else initChrome();
