@@ -59,6 +59,47 @@
     const r = await call("upload", { name: file.name, kind, dataUrl }); return r.url;
   }
 
+  /* ---------- ตรวจเซิร์ฟเวอร์ + ตรวจว่ารูปจาก Drive คนทั่วไปเห็นได้จริง ----------
+     หมายเหตุ: ในเบราว์เซอร์ของเจ้าของ Google Drive ลิงก์รูปตรงมักเปิดได้เสมอ (เพราะล็อกอินอยู่)
+     แต่คนอื่นอาจเปิดไม่ได้ — การตรวจนี้จึงถามเซิร์ฟเวอร์ (Apps Script) ว่าส่งรูปให้คนทั่วไปได้หรือไม่ */
+  const oldServer = () => C.LIVE && D && (!D.version || String(D.version) < C.SERVER_VERSION);
+  function serverBanner() {
+    if (!oldServer()) return "";
+    return '<div class="a-card warn-card"><h3>⚠ Code.gs บนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า</h3><p class="desc">หน้าเว็บอัปเดตแล้ว แต่ Apps Script ยังรันโค้ดเก่าอยู่ — <b>รูปจาก Google Drive จะไม่ขึ้นสำหรับคนทั่วไป</b> และระบบประกาศผลโหวต / โปรไฟล์แฟนคลับยังใช้ไม่ได้</p><ol class="steps-sm"><li>Google Sheet → ส่วนขยาย → Apps Script → ลบโค้ดเดิมใน Code.gs แล้ววาง <b>backend/Code.gs</b> ใหม่ทั้งไฟล์ → บันทึก</li><li>เลือกฟังก์ชัน <b>setup</b> → Run</li><li>Deploy → <b>Manage deployments</b> → ✎ แก้ไข deployment เดิม → Version: <b>New version</b> → Deploy</li><li>กลับมาหน้านี้แล้วกดปุ่ม ⟳ มุมขวาบน — ถ้าแถบนี้หายไปแปลว่าเรียบร้อย</li></ol><p class="desc" style="margin:10px 0 0">ถ้าเผลอกด <b>New deployment</b> จะได้ URL ใหม่ ต้องนำ URL ใหม่ไปใส่ใน js/config.js แทนของเดิม (ตอนนี้เว็บเชื่อมกับ <code>' + esc(String(C.CFG.API_URL || "").replace(/^(.{48}).+(.{10})$/, "$1…$2")) + "</code>)</p></div>";
+  }
+  const imgWhy = m => /เปิดไฟล์ไม่ได้/.test(m || "") ? "เปิดไม่ได้ — ไฟล์ถูกลบ หรือไม่ได้อยู่ใน Drive ของบัญชีที่ตั้ง Apps Script (แก้: กดอัปโหลดรูปใหม่จากหลังบ้าน)" : (m || "เปิดไม่ได้");
+  function imageTargets() {
+    const out = [], add = (label, url) => { if (url) out.push({ label, url: String(url) }); };
+    D.trainees.forEach(t => add("เด็กฝึก " + C.code(t) + " " + (t.stageName || t.name), t.photo));
+    (D.staff || []).forEach(x => add("ทีมงาน " + x.name, x.avatar));
+    (D.banners || []).forEach(x => add("แบนเนอร์ " + x.title, x.image));
+    (D.news || []).forEach(x => add("ข่าว " + x.title, x.image));
+    (D.rounds || []).forEach(x => add("รอบ " + x.code, x.banner));
+    (D.uniforms || []).forEach(x => add("ชุด " + x.name, x.image));
+    (D.tracks || []).forEach(x => add("ปกเพลง " + x.title, x.cover));
+    (D.history || []).forEach(x => add("ประวัติ " + x.title, x.image));
+    (D.settings.winners || []).forEach(x => add("ศิลปิน " + x.name, x.cover));
+    add("ประกาศ popup", (D.settings.announcement || {}).image);
+    return out;
+  }
+  async function checkImages(list) {
+    const res = list.map(x => Object.assign({}, x, { id: C.driveImgId(x.url) }));
+    const ids = Array.from(new Set(res.filter(r => r.id).map(r => r.id))), info = {}; let old = false;
+    for (let i = 0; i < ids.length && C.LIVE; i += 16) {
+      const part = ids.slice(i, i + 16);
+      try { const r = await C.API.get("image", { ids: part.join(","), meta: 1 }); if (!r || !r.items) { old = true; break; } part.forEach(id => info[id] = r.items[id] ? { ok: 1, size: r.items[id].size } : { ok: 0, msg: (r.errors || {})[id] }); }
+      catch (e) { part.forEach(id => info[id] = { ok: 0, msg: e.message }); }
+    }
+    for (const r of res) {
+      if (/^data:image\//.test(r.url)) { r.ok = 1; r.msg = "ฝังอยู่ในข้อมูล (โหมดตัวอย่าง)"; continue; }
+      if (r.id && C.LIVE) { const x = info[r.id] || {}; r.ok = !old && !!x.ok; r.msg = old ? "Code.gs บนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — คนทั่วไปจะไม่เห็นรูปนี้" : x.ok ? "คนทั่วไปเห็นได้" + (x.size ? " · " + Math.round(x.size / 1024) + " KB" : "") : imgWhy(x.msg); continue; }
+      r.ok = await new Promise(done => { const im = new Image(), t = setTimeout(() => done(false), 12000); im.onload = () => { clearTimeout(t); done(true); }; im.onerror = () => { clearTimeout(t); done(false); }; im.src = C.imgUrl(r.url); });
+      r.msg = r.ok ? "ลิงก์ภายนอก เปิดได้" : "ลิงก์เปิดไม่ได้ — ตรวจลิงก์ หรือกดอัปโหลดรูปใหม่จากหลังบ้าน";
+    }
+    return { res, old };
+  }
+  const IMGCHK = { html: "" };
+
   /* ---------- generic fields ---------- */
   const OPT = {
     status: () => [["active", "กำลังแข่งขัน"], ["eliminated", "ตกรอบ"], ["withdrawn", "ถอนตัว"], ["debut", "เดบิวต์"]],
@@ -113,7 +154,9 @@
     $$("[data-up]", root).forEach(inp => inp.addEventListener("change", async () => {
       const file = inp.files[0]; if (!file) return; const t = $("#" + inp.dataset.up, root), pv = root.querySelector('[data-pv="' + inp.dataset.up + '"]');
       pv.textContent = "กำลังอัปโหลด…";
-      try { const url = await upload(file, inp.dataset.kind, inp.dataset.max); if (url.startsWith("data:")) { t.value = "(อัปโหลดแล้ว)"; t.dataset.raw = url; } else { t.value = url; t.dataset.raw = ""; } pv.innerHTML = inp.dataset.kind === "image" ? '<img src="' + attr(C.imgUrl(url)) + '" alt="">' : "✓ อัปโหลดแล้ว"; C.toast("อัปโหลดแล้ว อย่าลืมกดบันทึก"); }
+      try { const url = await upload(file, inp.dataset.kind, inp.dataset.max); if (url.startsWith("data:")) { t.value = "(อัปโหลดแล้ว)"; t.dataset.raw = url; } else { t.value = url; t.dataset.raw = ""; } pv.innerHTML = inp.dataset.kind === "image" ? '<img src="' + attr(C.imgUrl(url)) + '" alt="">' : "✓ อัปโหลดแล้ว"; C.toast("อัปโหลดแล้ว อย่าลืมกดบันทึก");
+        if (C.LIVE && inp.dataset.kind === "image") { const box = inp.closest(".img-field").lastElementChild; const old = box.querySelector(".img-chk"); if (old) old.remove(); const note = document.createElement("small"); note.className = "img-chk"; note.textContent = "กำลังตรวจว่าคนทั่วไปเห็นรูปนี้ได้ไหม…"; box.appendChild(note);
+          checkImages([{ label: "", url }]).then(({ res }) => { const r = res[0]; note.className = "img-chk " + (r.ok ? "ok" : "no"); note.textContent = (r.ok ? "✓ คนทั่วไปเห็นรูปนี้ได้ — กดบันทึกเพื่อใช้รูปนี้" : "✗ " + r.msg); }); } }
       catch (e) { pv.textContent = "ผิดพลาด"; C.toast(e.message, true); }
       inp.value = "";
     }));
@@ -268,13 +311,24 @@
         '<div class="a-card"><h3>กิจกรรมที่กำลังจะถึง</h3><p class="desc">จากปฏิทิน 2570</p><div class="rows">' + (soon.map(e => { const r = SCHEMA.events.row(e); return '<div class="row">' + r.th + '<div class="tx"><strong>' + esc(r.title) + "</strong><small>" + esc(r.sub) + "</small></div><div></div></div>"; }).join("") || '<div class="empty">ไม่มีกิจกรรมที่กำลังจะถึง</div>') + "</div></div></div>" +
         '<div class="grid2" style="margin-top:16px"><div class="a-card"><h3>สิ่งที่ควรตรวจ</h3><ul class="notes" style="margin-top:12px">' +
         "<li>รอบปัจจุบัน: " + esc(cr ? cr.code + " " + cr.title : "ยังไม่ได้ตั้ง") + "</li><li>ประกาศผลโหวตแล้ว: " + esc(rounds().filter(r => ((D.board || {})[r.id] || {}).published).map(r => r.code).join(", ") || "ยังไม่มี") + "</li><li>เด็กฝึกที่ยังไม่มีรูป: " + noPhoto + " คน</li><li>แบนเนอร์ที่แสดงอยู่: " + D.banners.filter(b => b.active !== false).length + " ชิ้น</li><li>บัญชีแฟนคลับที่ถูกระงับ: " + D.fans.filter(f => f.banned).length + " บัญชี</li>" + (oldG ? '<li style="color:#ffd9dd">ยังมีข้อมูลเด็กฝึกฝั่งหญิง (รหัส G) ค้างอยู่ ' + oldG + ' คน — THE CELESTIAL รับเฉพาะเด็กฝึกชาย ลบได้ที่เมนู “เด็กฝึก”</li>' : "") + "</ul></div>" +
-        '<div class="a-card"><h3>กิจกรรมล่าสุดของทีมงาน</h3><ul class="log" style="margin-top:8px">' + (D.log || []).slice(0, 8).map(l => "<li><time>" + esc(fmtTs(l.ts)) + "</time><span><b>" + esc(l.user) + "</b> " + esc(logText(l)) + "</span></li>").join("") + "</ul></div></div>";
+        '<div class="a-card"><h3>กิจกรรมล่าสุดของทีมงาน</h3><ul class="log" style="margin-top:8px">' + (D.log || []).slice(0, 8).map(l => "<li><time>" + esc(fmtTs(l.ts)) + "</time><span><b>" + esc(l.user) + "</b> " + esc(logText(l)) + "</span></li>").join("") + "</ul></div></div>" +
+        '<div class="a-card" style="margin-top:16px"><div class="a-head"><div><h3>ตรวจรูปภาพบนเว็บ</h3><span class="muted" style="font-size:13.5px">เช็กว่ารูปทุกรูปที่ใช้บนเว็บ คนทั่วไป (ที่ไม่ได้ล็อกอิน Google ของทีมงาน) เปิดเห็นได้จริงไหม</span></div><button class="btn btn-ghost btn-sm" type="button" id="imgCheck">ตรวจทุกรูป</button></div><div id="imgRes">' + IMGCHK.html + "</div></div>";
     },
     bind: root => {
       $("#qVote", root).addEventListener("change", async e => { try { await saveSettings({ vote: Object.assign({}, D.settings.vote, { open: e.target.checked }) }); C.toast(e.target.checked ? "เปิดโหวตแล้ว" : "ปิดโหวตแล้ว"); } catch (x) { C.toast(x.message, true); e.target.checked = !e.target.checked; } });
       $("#qAnn", root).addEventListener("change", async e => { try { await saveSettings({ announcement: Object.assign({}, D.settings.announcement, { on: e.target.checked, version: C.uid("a") }) }); C.toast("บันทึกแล้ว"); } catch (x) { C.toast(x.message, true); } });
       $("#qRound", root).addEventListener("change", async e => { try { await saveSettings({ currentRound: e.target.value }); C.toast("ตั้งรอบปัจจุบันแล้ว"); } catch (x) { C.toast(x.message, true); } });
       root.addEventListener("click", e => { const g = e.target.closest("[data-go]"); if (g) go(g.dataset.go); });
+      $("#imgCheck", root).addEventListener("click", async e => {
+        const b = e.target; b.disabled = true; b.textContent = "กำลังตรวจ…"; $("#imgRes", root).innerHTML = '<p class="muted" style="font-size:13.5px">กำลังตรวจรูปทั้งหมด อาจใช้เวลาสักครู่…</p>';
+        try {
+          const { res, old } = await checkImages(imageTargets()); const bad = res.filter(r => !r.ok);
+          IMGCHK.html = '<p class="img-sum ' + (bad.length ? "no" : "ok") + '">' + (!res.length ? "ยังไม่มีรูปบนเว็บ" : old ? "⚠ Code.gs บนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — รูปจาก Drive ทั้งหมดจะไม่ขึ้นสำหรับคนทั่วไป (ดูวิธีแก้ที่แถบเหลืองด้านบน)" : bad.length ? "รูปทั้งหมด " + res.length + " รูป — มีปัญหา " + bad.length + " รูป" : "✓ รูปทั้งหมด " + res.length + " รูป คนทั่วไปเห็นได้ครบ") + "</p>" +
+            (bad.length && !old ? '<ul class="chk-list">' + bad.map(r => "<li><b>" + esc(r.label) + "</b><span>" + esc(r.msg) + "</span></li>").join("") + "</ul>" : "") +
+            '<p class="muted" style="font-size:12.5px;margin:8px 0 0">ตรวจเมื่อ ' + esc(new Date().toLocaleTimeString("th-TH")) + "</p>";
+        } catch (x) { IMGCHK.html = '<p class="img-sum no">ตรวจไม่สำเร็จ: ' + esc(x.message) + "</p>"; }
+        $("#imgRes", root).innerHTML = IMGCHK.html; b.disabled = false; b.textContent = "ตรวจอีกครั้ง";
+      });
     }
   };
   const LOGW = { login: "เข้าสู่ระบบ", add: "เพิ่ม", edit: "แก้ไข", delete: "ลบ", reorder: "จัดลำดับ", update: "อัปเดต", settings: "แก้ตั้งค่า", ban: "ระงับแฟนคลับ", unban: "ยกเลิกระงับ", account: "จัดการบัญชี", password: "เปลี่ยนรหัสผ่าน", votesReset: "รีเซ็ตโหวต", save: "บันทึก", upload: "อัปโหลดไฟล์", voteBoard: "บันทึกคะแนนโหวตภายนอก", votePublish: "ประกาศผลโหวต", voteUnpublish: "ยกเลิกประกาศผลโหวต", fanModerate: "จัดการโปรไฟล์แฟนคลับ" };
@@ -497,7 +551,7 @@
     $("#aTitle").textContent = TITLES[view] || "";
     const root = $("#view"); const y = window.scrollY;
     const fresh = root.cloneNode(false); root.replaceWith(fresh);
-    fresh.innerHTML = VIEWS[view].html(); VIEWS[view].bind(fresh);
+    fresh.innerHTML = serverBanner() + VIEWS[view].html(); VIEWS[view].bind(fresh);
     window.scrollTo(0, y);
   }
   async function reload(keep) { D = await call("admin"); if (!keep) RK.list = null; if (!VB.dirty) VB.sources = null; render(); }
